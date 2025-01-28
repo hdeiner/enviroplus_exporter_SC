@@ -1,35 +1,33 @@
 #!/usr/bin/env python3
 import os
-import random
 import requests
 import time
 import logging
 import argparse
 import subprocess
-import serial
 from threading import Thread
 
 from prometheus_client import start_http_server, Gauge, Histogram
 
-from bme280 import BME280
-from enviroplus import gas
-from pms5003 import PMS5003, ReadTimeoutError as pmsReadTimeoutError, SerialTimeoutError as pmsSerialTimeoutError
+## enviroplus_exporter_SC ##from bme280 import BME280
+## enviroplus_exporter_SC ##from enviroplus import gas
+## enviroplus_exporter_SC ##from pms5003 import PMS5003, ReadTimeoutError as pmsReadTimeoutError, SerialTimeoutError as pmsSerialTimeoutError
 
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 
-try:
-    from smbus2 import SMBus
-except ImportError:
-    from smbus import SMBus
+## enviroplus_exporter_SC ##try:
+## enviroplus_exporter_SC ##    from smbus2 import SMBus
+## enviroplus_exporter_SC ##except ImportError:
+## enviroplus_exporter_SC ##    from smbus import SMBus
 
-try:
-    # Transitional fix for breaking change in LTR559
-    from ltr559 import LTR559
-    ltr559 = LTR559()
-except ImportError:
-    import ltr559
+## enviroplus_exporter_SC ##try:
+## enviroplus_exporter_SC ##    # Transitional fix for breaking change in LTR559
+## enviroplus_exporter_SC ##    from ltr559 import LTR559
+## enviroplus_exporter_SC ##    ltr559 = LTR559()
+## enviroplus_exporter_SC ##except ImportError:
+## enviroplus_exporter_SC ##    import ltr559
 
 logging.basicConfig(
     format='%(asctime)s.%(msecs)03d %(levelname)-8s %(message)s',
@@ -38,20 +36,19 @@ logging.basicConfig(
               logging.StreamHandler()],
     datefmt='%Y-%m-%d %H:%M:%S')
 
-logging.info("""enviroplus_exporter.py - Expose readings from the Enviro+ sensor by Pimoroni in Prometheus format
 
-Press Ctrl+C to exit!
-
-""")
+# Seeed Studio Smart Citizen Kit 2.3 - Open Source Environmental Monitoring Kit - https://www.seeedstudio.com/Smart-Citizen2-3-p-6327.html
+# Main URL definitions can be found at https://api.smartcitizen.me/
+logging.info("""enviroplus_exporter_SC.py - Expose readings from the Seed Studio Smart Citizen 2.3 sensors in Prometheus format just as if they were Pimoroni Enviro+ sensors.  Press Ctrl+C to exit!""")
 
 DEBUG = os.getenv('DEBUG', 'false') == 'true'
 
-bus = SMBus(1)
-bme280 = BME280(i2c_dev=bus)
-try:
-    pms5003 = PMS5003()
-except serial.serialutil.SerialException:
-    logging.warning("Failed to initialise PMS5003.")
+## enviroplus_exporter_SC ##bus = SMBus(1)
+## enviroplus_exporter_SC ##bme280 = BME280(i2c_dev=bus)
+## enviroplus_exporter_SC ##try:
+## enviroplus_exporter_SC ##    pms5003 = PMS5003()
+## enviroplus_exporter_SC ##except serial.serialutil.SerialException:
+## enviroplus_exporter_SC ##    logging.warning("Failed to initialise PMS5003.")
 
 TEMPERATURE = Gauge('temperature','Temperature measured (*C)')
 PRESSURE = Gauge('pressure','Pressure measured (hPa)')
@@ -87,115 +84,159 @@ influxdb_api = influxdb_client.write_api(write_options=SYNCHRONOUS)
 # Setup Luftdaten
 LUFTDATEN_TIME_BETWEEN_POSTS = int(os.getenv('LUFTDATEN_TIME_BETWEEN_POSTS', '30'))
 
-# Sometimes the sensors can't be read. Resetting the i2c 
-def reset_i2c():
-    subprocess.run(['i2cdetect', '-y', '1'])
-    time.sleep(2)
+## enviroplus_exporter_SC #### enviroplus_exporter_SC ### Sometimes the sensors can't be read. Resetting the i2c 
+## enviroplus_exporter_SC ##def reset_i2c():
+## enviroplus_exporter_SC ##    subprocess.run(['i2cdetect', '-y', '1'])
+## enviroplus_exporter_SC ##    time.sleep(2)
 
 
-# Get the temperature of the CPU for compensation
-def get_cpu_temperature():
-    with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
-        temp = f.read()
-        temp = int(temp) / 1000.0
-    return temp
+## enviroplus_exporter_SC ### Get the temperature of the CPU for compensation
+## enviroplus_exporter_SC ##def get_cpu_temperature():
+## enviroplus_exporter_SC ##    with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+## enviroplus_exporter_SC ##        temp = f.read()
+## enviroplus_exporter_SC ##        temp = int(temp) / 1000.0
+## enviroplus_exporter_SC ##    return temp
 
-def get_temperature(factor):
-    """Get temperature from the weather sensor"""
-    # Tuning factor for compensation. Decrease this number to adjust the
-    # temperature down, and increase to adjust up
-    raw_temp = bme280.get_temperature()
-
-    if factor:
-        cpu_temps = [get_cpu_temperature()] * 5
-        cpu_temp = get_cpu_temperature()
-        # Smooth out with some averaging to decrease jitter
-        cpu_temps = cpu_temps[1:] + [cpu_temp]
-        avg_cpu_temp = sum(cpu_temps) / float(len(cpu_temps))
-        temperature = raw_temp - ((avg_cpu_temp - raw_temp) / factor)
-    else:
-        temperature = raw_temp
-
-    TEMPERATURE.set(temperature)   # Set to a given value
-
-def get_pressure():
-    """Get pressure from the weather sensor"""
-    try:
-        pressure = bme280.get_pressure()
-        PRESSURE.set(pressure)
-    except IOError:
-        logging.error("Could not get pressure readings. Resetting i2c.")
-        reset_i2c()
-
-def get_humidity():
-    """Get humidity from the weather sensor"""
-    try:
-        humidity = bme280.get_humidity()
-        HUMIDITY.set(humidity)
-    except IOError:
-        logging.error("Could not get humidity readings. Resetting i2c.")
-        reset_i2c()
-
-def get_gas():
-    """Get all gas readings"""
-    try:
-        readings = gas.read_all()
-
-        OXIDISING.set(readings.oxidising)
-        OXIDISING_HIST.observe(readings.oxidising)
-
-        REDUCING.set(readings.reducing)
-        REDUCING_HIST.observe(readings.reducing)
-
-        NH3.set(readings.nh3)
-        NH3_HIST.observe(readings.nh3)
-    except IOError:
-        logging.error("Could not get gas readings. Resetting i2c.")
-        reset_i2c()
-
-def get_light():
-    """Get all light readings"""
-    try:
-       lux = ltr559.get_lux()
-       prox = ltr559.get_proximity()
-
-       LUX.set(lux)
-       PROXIMITY.set(prox)
-    except IOError:
-        logging.error("Could not get lux and proximity readings. Resetting i2c.")
-        reset_i2c()
-
-def get_particulates():
-    """Get the particulate matter readings"""
-    try:
-        pms_data = pms5003.read()
-    except pmsReadTimeoutError:
-        logging.warning("Timed out reading PMS5003.")
-    except (IOError, pmsSerialTimeoutError):
-        logging.warning("Could not get particulate matter readings.")
-    else:
-        PM1.set(pms_data.pm_ug_per_m3(1.0))
-        PM25.set(pms_data.pm_ug_per_m3(2.5))
-        PM10.set(pms_data.pm_ug_per_m3(10))
-
-        PM1_HIST.observe(pms_data.pm_ug_per_m3(1.0))
-        PM25_HIST.observe(pms_data.pm_ug_per_m3(2.5) - pms_data.pm_ug_per_m3(1.0))
-        PM10_HIST.observe(pms_data.pm_ug_per_m3(10) - pms_data.pm_ug_per_m3(2.5))
+## enviroplus_exporter_SC ##def get_temperature(factor):
+## enviroplus_exporter_SC ##    """Get temperature from the weather sensor"""
+## enviroplus_exporter_SC ##    # Tuning factor for compensation. Decrease this number to adjust the
+## enviroplus_exporter_SC ##    # temperature down, and increase to adjust up
+## enviroplus_exporter_SC ##    raw_temp = bme280.get_temperature()
+## enviroplus_exporter_SC ##    temperature = bme280.get_temperature()
+## enviroplus_exporter_SC ##
+## enviroplus_exporter_SC ##    if factor:
+## enviroplus_exporter_SC ##        cpu_temps = [get_cpu_temperature()] * 5
+## enviroplus_exporter_SC ##        cpu_temp = get_cpu_temperature()
+## enviroplus_exporter_SC ##        # Smooth out with some averaging to decrease jitter
+## enviroplus_exporter_SC ##        cpu_temps = cpu_temps[1:] + [cpu_temp]
+## enviroplus_exporter_SC ##        avg_cpu_temp = sum(cpu_temps) / float(len(cpu_temps))
+## enviroplus_exporter_SC ##        temperature = raw_temp - ((avg_cpu_temp - raw_temp) / factor)
+## enviroplus_exporter_SC ##    else:
+## enviroplus_exporter_SC ##        temperature = raw_temp
+## enviroplus_exporter_SC ##
+## enviroplus_exporter_SC ##    TEMPERATURE.set(temperature)   # Set to a given value
+## enviroplus_exporter_SC ##
+## enviroplus_exporter_SC ##def get_pressure():
+## enviroplus_exporter_SC ##    """Get pressure from the weather sensor"""
+## enviroplus_exporter_SC ##    try:
+## enviroplus_exporter_SC ##        pressure = bme280.get_pressure()
+## enviroplus_exporter_SC ##        PRESSURE.set(pressure)
+## enviroplus_exporter_SC ##    except IOError:
+## enviroplus_exporter_SC ##        logging.error("Could not get pressure readings. Resetting i2c.")
+## enviroplus_exporter_SC ##        reset_i2c()
+## enviroplus_exporter_SC ##
+## enviroplus_exporter_SC ##def get_humidity():
+## enviroplus_exporter_SC ##    """Get humidity from the weather sensor"""
+## enviroplus_exporter_SC ##    try:
+## enviroplus_exporter_SC ##        humidity = bme280.get_humidity()
+## enviroplus_exporter_SC ##        HUMIDITY.set(humidity)
+## enviroplus_exporter_SC ##    except IOError:
+## enviroplus_exporter_SC ##        logging.error("Could not get humidity readings. Resetting i2c.")
+## enviroplus_exporter_SC ##        reset_i2c()
+## enviroplus_exporter_SC ##
+## enviroplus_exporter_SC ##def get_gas():
+## enviroplus_exporter_SC ##    """Get all gas readings"""
+## enviroplus_exporter_SC ##    try:
+## enviroplus_exporter_SC ##        readings = gas.read_all()
+## enviroplus_exporter_SC ##
+## enviroplus_exporter_SC ##        OXIDISING.set(readings.oxidising)
+## enviroplus_exporter_SC ##        OXIDISING_HIST.observe(readings.oxidising)
+## enviroplus_exporter_SC ##
+## enviroplus_exporter_SC ##        REDUCING.set(readings.reducing)
+## enviroplus_exporter_SC ##        REDUCING_HIST.observe(readings.reducing)
+## enviroplus_exporter_SC ##
+## enviroplus_exporter_SC ##        NH3.set(readings.nh3)
+## enviroplus_exporter_SC ##        NH3_HIST.observe(readings.nh3)
+## enviroplus_exporter_SC ##    except IOError:
+## enviroplus_exporter_SC ##        logging.error("Could not get gas readings. Resetting i2c.")
+## enviroplus_exporter_SC ##        reset_i2c()
+## enviroplus_exporter_SC ##
+## enviroplus_exporter_SC ##def get_light():
+## enviroplus_exporter_SC ##    """Get all light readings"""
+## enviroplus_exporter_SC ##    try:
+## enviroplus_exporter_SC ##       lux = ltr559.get_lux()
+## enviroplus_exporter_SC ##       prox = ltr559.get_proximity()
+## enviroplus_exporter_SC ##
+## enviroplus_exporter_SC ##       LUX.set(lux)
+## enviroplus_exporter_SC ##       PROXIMITY.set(prox)
+## enviroplus_exporter_SC ##    except IOError:
+## enviroplus_exporter_SC ##        logging.error("Could not get lux and proximity readings. Resetting i2c.")
+## enviroplus_exporter_SC ##        reset_i2c()
+## enviroplus_exporter_SC ##
+## enviroplus_exporter_SC ##def get_particulates():
+## enviroplus_exporter_SC ##    """Get the particulate matter readings"""
+## enviroplus_exporter_SC ##    try:
+## enviroplus_exporter_SC ##        pms_data = pms5003.read()
+## enviroplus_exporter_SC ##    except pmsReadTimeoutError:
+## enviroplus_exporter_SC ##        logging.warning("Timed out reading PMS5003.")
+## enviroplus_exporter_SC ##    except (IOError, pmsSerialTimeoutError):
+## enviroplus_exporter_SC ##        logging.warning("Could not get particulate matter readings.")
+## enviroplus_exporter_SC ##    else:
+## enviroplus_exporter_SC ##        PM1.set(pms_data.pm_ug_per_m3(1.0))
+## enviroplus_exporter_SC ##        PM25.set(pms_data.pm_ug_per_m3(2.5))
+## enviroplus_exporter_SC ##        PM10.set(pms_data.pm_ug_per_m3(10))
+## enviroplus_exporter_SC ##
+## enviroplus_exporter_SC ##        PM1_HIST.observe(pms_data.pm_ug_per_m3(1.0))
+## enviroplus_exporter_SC ##        PM25_HIST.observe(pms_data.pm_ug_per_m3(2.5) - pms_data.pm_ug_per_m3(1.0))
+## enviroplus_exporter_SC ##        PM10_HIST.observe(pms_data.pm_ug_per_m3(10) - pms_data.pm_ug_per_m3(2.5))
 
 def collect_all_data():
     """Collects all the data currently set"""
     sensor_data = {}
-    sensor_data['temperature'] = TEMPERATURE.collect()[0].samples[0].value
-    sensor_data['humidity'] = HUMIDITY.collect()[0].samples[0].value
-    sensor_data['pressure'] = PRESSURE.collect()[0].samples[0].value
-    sensor_data['oxidising'] = OXIDISING.collect()[0].samples[0].value
-    sensor_data['reducing'] = REDUCING.collect()[0].samples[0].value
-    sensor_data['nh3'] = NH3.collect()[0].samples[0].value
-    sensor_data['lux'] = LUX.collect()[0].samples[0].value
-    sensor_data['proximity'] = PROXIMITY.collect()[0].samples[0].value
-    sensor_data['pm1'] = PM1.collect()[0].samples[0].value
-    sensor_data['pm25'] = PM25.collect()[0].samples[0].value
-    sensor_data['pm10'] = PM10.collect()[0].samples[0].value
+
+    device_id = '18387'
+    url = f'https://api.smartcitizen.me/v0/devices/{device_id}'
+
+    response = requests.get(url)
+
+    if response.status_code == 200:
+        data = response.json()  
+    else:
+        print(f"Error fetching data: {response.status_code}")
+
+    if 'data' in data and 'sensors' in data['data']:
+        sensors = data['data']['sensors']
+    
+#        print("")
+        for sensor in sensors:
+            sensor_name = sensor['name']
+            sensor_value = sensor['value']
+#            print(f"Sensor: {sensor_name}, Value: {sensor_value}")
+            if (sensor_name == 'Sensirion SHT31 - Temperature'):
+                sensor_data['temperature'] = float(sensor_value)
+                TEMPERATURE.set(sensor_data['temperature'])
+            if (sensor_name == 'Sensirion SHT31 - Humidity'):
+                sensor_data['humidity'] = float(sensor_value)
+                HUMIDITY.set(sensor_data['humidity'])
+            if (sensor_name == 'NXP MPL3115A2 - Barometric Pressure'):
+                sensor_data['pressure'] = float(sensor_value)*10.0
+                PRESSURE.set(sensor_data['pressure'])
+            if (sensor_name == 'BH1730FVC - Light'):
+                sensor_data['lux'] = float(sensor_value)
+                LUX.set(sensor_data['lux'])
+            if (sensor_name == 'Sensirion SEN5X - PM1.0'):
+                sensor_data['pm1'] = float(sensor_value)
+                PM1.set(sensor_data['pm1'])
+            if (sensor_name == 'Sensirion SEN5X - PM2.5'):
+                sensor_data['pm25'] = float(sensor_value)
+                PM25.set(sensor_data['pm25'])
+            if (sensor_name == 'Sensirion SEN5X - PM10.0'):
+                sensor_data['pm10'] = float(sensor_value)
+                PM10.set(sensor_data['pm10'])
+    else:
+        print("No sensor data found.")
+
+## enviroplus_exporter_SC ##   sensor_data['temperature'] = TEMPERATURE.collect()[0].samples[0].value
+## enviroplus_exporter_SC ##    sensor_data['humidity'] = HUMIDITY.collect()[0].samples[0].value
+## enviroplus_exporter_SC ##    sensor_data['pressure'] = PRESSURE.collect()[0].samples[0].value
+## enviroplus_exporter_SC ##    sensor_data['oxidising'] = OXIDISING.collect()[0].samples[0].value
+## enviroplus_exporter_SC ##    sensor_data['reducing'] = REDUCING.collect()[0].samples[0].value
+## enviroplus_exporter_SC ##    sensor_data['nh3'] = NH3.collect()[0].samples[0].value
+## enviroplus_exporter_SC ##    sensor_data['lux'] = LUX.collect()[0].samples[0].value
+## enviroplus_exporter_SC ##    sensor_data['proximity'] = PROXIMITY.collect()[0].samples[0].value
+## enviroplus_exporter_SC ##    sensor_data['pm1'] = PM1.collect()[0].samples[0].value
+## enviroplus_exporter_SC ##   sensor_data['pm25'] = PM25.collect()[0].samples[0].value
+## enviroplus_exporter_SC ##    sensor_data['pm10'] = PM10.collect()[0].samples[0].value
     return sensor_data
 
 def post_to_influxdb():
@@ -320,12 +361,14 @@ if __name__ == '__main__':
     logging.info("Listening on http://{}:{}".format(args.bind, args.port))
 
     while True:
-        get_temperature(args.factor)
-        get_pressure()
-        get_humidity()
-        get_light()
-        if not args.enviro:
-            get_gas()
-            get_particulates()
-        if DEBUG:
-            logging.info('Sensor data: {}'.format(collect_all_data()))
+        collect_all_data()
+        time.sleep(20)
+## enviroplus_exporter_SC         get_temperature(args.factor)
+## enviroplus_exporter_SC         get_pressure()
+## enviroplus_exporter_SC         get_humidity()
+## enviroplus_exporter_SC         get_light()
+## enviroplus_exporter_SC         if not args.enviro:
+## enviroplus_exporter_SC             get_gas()
+## enviroplus_exporter_SC             get_particulates()
+## enviroplus_exporter_SC         if DEBUG:
+## enviroplus_exporter_SC             logging.info('Sensor data: {}'.format(collect_all_data()))
