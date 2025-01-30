@@ -180,6 +180,35 @@ LUFTDATEN_TIME_BETWEEN_POSTS = int(os.getenv('LUFTDATEN_TIME_BETWEEN_POSTS', '30
 ## enviroplus_exporter_SC ##        PM25_HIST.observe(pms_data.pm_ug_per_m3(2.5) - pms_data.pm_ug_per_m3(1.0))
 ## enviroplus_exporter_SC ##        PM10_HIST.observe(pms_data.pm_ug_per_m3(10) - pms_data.pm_ug_per_m3(2.5))
 
+def make_request(url, max_retries=3):
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, timeout=5, verify=True)
+            response.raise_for_status()
+            return response
+            
+        except requests.exceptions.ConnectionError:
+            logging.info(f"Connection failed on attempt {attempt + 1} of {max_retries}")
+            if attempt < max_retries - 1:
+                time.sleep(5)
+                continue
+                
+        except requests.exceptions.Timeout:
+            logging.info(f"Request timed out on attempt {attempt + 1} of {max_retries}")
+            if attempt < max_retries - 1:
+                time.sleep(5)
+                continue
+                
+        except requests.exceptions.HTTPError as http_err:
+            logging.info(f"HTTP error occurred: {http_err}")
+            break
+            
+        except requests.exceptions.RequestException as err:
+            logging.info(f"An error occurred: {err}")
+            break
+            
+    return None
+
 def collect_all_data():
     """Collects all the data currently set"""
     sensor_data = {}
@@ -187,21 +216,23 @@ def collect_all_data():
     device_id = '18387'
     url = f'https://api.smartcitizen.me/v0/devices/{device_id}'
 
-    response = requests.get(url)
+    response = make_request(url)
 
-    if response.status_code == 200:
-        data = response.json()  
+    if response:
+        data = response.json()
     else:
-        print(f"Error fetching data: {response.status_code}")
+        logging.info("Request failed after all retries")
 
     if 'data' in data and 'sensors' in data['data']:
         sensors = data['data']['sensors']
     
-#        print("")
+        if args.debug:
+            logging.info("")
         for sensor in sensors:
             sensor_name = sensor['name']
             sensor_value = sensor['value']
-#            print(f"Sensor: {sensor_name}, Value: {sensor_value}")
+            if args.debug:
+                logging.info(f"Sensor: {sensor_name}, Value: {sensor_value}")
             if (sensor_name == 'Sensirion SHT31 - Temperature'):
                 sensor_data['temperature'] = float(sensor_value)
                 TEMPERATURE.set(sensor_data['temperature'])
@@ -217,14 +248,17 @@ def collect_all_data():
             if (sensor_name == 'Sensirion SEN5X - PM1.0'):
                 sensor_data['pm1'] = float(sensor_value)
                 PM1.set(sensor_data['pm1'])
+                PM1_HIST.observe(sensor_data['pm1'])
             if (sensor_name == 'Sensirion SEN5X - PM2.5'):
                 sensor_data['pm25'] = float(sensor_value)
                 PM25.set(sensor_data['pm25'])
+                PM25_HIST.observe(sensor_data['pm25'])
             if (sensor_name == 'Sensirion SEN5X - PM10.0'):
                 sensor_data['pm10'] = float(sensor_value)
                 PM10.set(sensor_data['pm10'])
+                PM10_HIST.observe(sensor_data['pm10'])
     else:
-        print("No sensor data found.")
+        logging.info("No sensor data found.")
 
 ## enviroplus_exporter_SC ##   sensor_data['temperature'] = TEMPERATURE.collect()[0].samples[0].value
 ## enviroplus_exporter_SC ##    sensor_data['humidity'] = HUMIDITY.collect()[0].samples[0].value
@@ -362,7 +396,7 @@ if __name__ == '__main__':
 
     while True:
         collect_all_data()
-        time.sleep(20)
+        time.sleep(5)
 ## enviroplus_exporter_SC         get_temperature(args.factor)
 ## enviroplus_exporter_SC         get_pressure()
 ## enviroplus_exporter_SC         get_humidity()
